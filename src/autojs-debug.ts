@@ -6,6 +6,7 @@ import * as http from 'http'
 import * as fs from 'fs'
 import * as jszip from 'jszip'
 import { Project, ProjectObserser } from './project';
+import * as vscode from "vscode";
 
 const DEBUG = false;
 
@@ -113,6 +114,7 @@ export class AutoJsDebugServer extends EventEmitter {
     private port: number;
     public devices: Array<Device> = [];
     public project: Project = null;
+    private logChannels: Map<string, vscode.OutputChannel>;
     private fileFilter = (relativePath: string, absPath: string, stats: fs.Stats)=>{
         if(!this.project){
             return true;
@@ -122,6 +124,7 @@ export class AutoJsDebugServer extends EventEmitter {
 
     constructor(port: number) {
         super();
+        this.logChannels = new Map<string, vscode.OutputChannel>();
         this.port = port;
         this.httpServer = http.createServer(function (request, response) {
             console.log(new Date() + ' Received request for ' + request.url);
@@ -139,6 +142,9 @@ export class AutoJsDebugServer extends EventEmitter {
             device.on("attach", (device) => {
                 this.attachDevice(device);
                 this.emit('new_device', device);
+                
+                let logChannel = this.newLogChannel(device);
+                logChannel.appendLine(`设备已连接：${device}`);
             });
         });
     }
@@ -177,6 +183,7 @@ export class AutoJsDebugServer extends EventEmitter {
     }
 
     sendProjectCommand(folder:string, command: string) {
+        let startTime = new Date().getTime();
         this.devices.forEach(device => {
             if(device.projectObserser == null || device.projectObserser.folder != folder){
                 device.projectObserser = new ProjectObserser(folder, this.fileFilter);
@@ -188,6 +195,7 @@ export class AutoJsDebugServer extends EventEmitter {
                         'id': folder,
                         'name': folder
                     });
+                    this.getLogChannel(device).appendLine(`发送项目耗时: ${(new Date().getTime() - startTime)/1000} 秒`);
                 });
         });
     }
@@ -201,12 +209,17 @@ export class AutoJsDebugServer extends EventEmitter {
     disconnect(): void {
         this.httpServer.close();
         this.emit("disconnect");
+        this.logChannels.forEach(channel => {
+            channel.dispose();
+        });
+        this.logChannels.clear();
     }
 
     private attachDevice(device: Device): void {
         this.devices.push(device);
         device.on('data:log', data => {
             console.log(data['log']);
+            this.getLogChannel(device).appendLine(data['log']);
             this.emit('log', data['log']);
         });
         device.on('disconnect', this.detachDevice.bind(this, device));
@@ -215,6 +228,27 @@ export class AutoJsDebugServer extends EventEmitter {
     private detachDevice(device: Device): void {
         this.devices.splice(this.devices.indexOf(device), 1);
         console.log("detachDevice: " + device);
+        this.getLogChannel(device).appendLine(`设备已断开：${device}`);
+    }
+
+    /** 创建设备日志打印通道 */
+    private newLogChannel(device: Device): vscode.OutputChannel {
+        let channelName = `${device}`;
+        let logChannel = this.logChannels.get(channelName);
+        if (!logChannel) {
+            logChannel = vscode.window.createOutputChannel(channelName);
+            this.logChannels.set(channelName, logChannel);
+        }
+        logChannel.show(true);
+        // console.log("创建日志通道" + channelName)
+        return logChannel;
+    }
+
+    /** 获取设备日志打印通道 */
+    private getLogChannel(device: Device): vscode.OutputChannel {
+        let channelName = `${device}`;
+        // console.log("获取日志通道：" + channelName);
+        return this.logChannels.get(channelName);
     }
 
 }
